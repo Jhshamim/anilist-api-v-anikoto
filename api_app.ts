@@ -5,15 +5,16 @@ import * as cheerio from "cheerio";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 
-export const app = express();
-const PORT = process.env.PORT || 3000;
+async function startServer() {
+  const app = express();
+  const PORT = 3000;
 
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['*']
-}));
-app.use(express.json());
+  app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['*']
+  }));
+  app.use(express.json());
 
   const ajaxClient = axios.create({
     baseURL: "https://anikoto.cz",
@@ -409,25 +410,24 @@ app.use(express.json());
     }
   });
 
-  // Start Server if not on Vercel
-  if (!process.env.VERCEL) {
-    (async () => {
-      if (process.env.NODE_ENV !== "production") {
-        const vite = await createViteServer({
-          server: { middlewareMode: true },
-          appType: "spa",
-        });
-        app.use(vite.middlewares);
-      } else {
-        const distPath = path.join(process.cwd(), 'dist');
-        app.use(express.static(distPath));
-        app.get('*all', (req, res) => {
-          res.sendFile(path.join(distPath, 'index.html'));
-        });
-      }
-
-      app.listen(PORT as number, "0.0.0.0", () => {
-        console.log(`Server running on http://localhost:${PORT}`);
-      });
-    })();
+  // Vite middleware for development
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*all', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
   }
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+startServer();

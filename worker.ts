@@ -2,9 +2,15 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import * as cheerio from 'cheerio'
 
+// Clean, verified Hono worker application for Cloudflare
 const app = new Hono()
 
-app.use('*', cors())
+app.use('*', cors({
+  origin: '*',
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowHeaders: ['*'],
+  exposeHeaders: ['*'],
+}))
 
 // Welcome and API usage documentation route
 app.get("/", (c) => {
@@ -154,31 +160,39 @@ async function resolveAnime(queryId: string) {
   let isAnilistId = /^\d+$/.test(queryId);
 
   if (isAnilistId) {
+    searchQueries = [];
     try {
-      const q = `query($id:Int){Media(id:$id,type:ANIME){title{romaji english}}}`;
-      const gqResp = await fetch("https://graphql.anilist.co", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        },
-        body: JSON.stringify({ query: q, variables: { id: parseInt(queryId, 10) } })
-      });
-      if (!gqResp.ok) {
-        const errText = await gqResp.text();
-        console.error(`AniList GraphQL HTTP error ${gqResp.status}:`, errText);
-        throw new Error(`HTTP ${gqResp.status}`);
+      // Primary fallback: Kitsu mapping API (which has explicit anilist -> anime mapping)
+      const kitsuResp = await fetch(`https://kitsu.io/api/edge/mappings?filter[externalSite]=anilist/anime&filter[externalId]=${queryId}&include=item`);
+      if (kitsuResp.ok) {
+        const kitsuData = await kitsuResp.json() as any;
+        if (kitsuData.included && kitsuData.included.length > 0) {
+          const attributes = kitsuData.included[0].attributes;
+          const titles = attributes.titles;
+          if (titles?.en) searchQueries.push(titles.en);
+          if (titles?.en_jp) searchQueries.push(titles.en_jp);
+          if (attributes?.canonicalTitle && !searchQueries.includes(attributes.canonicalTitle)) {
+            searchQueries.push(attributes.canonicalTitle);
+          }
+        }
       }
-      const gqData = await gqResp.json() as any;
-      const titles = gqData.data?.Media?.title;
-      searchQueries = [];
-      if (titles?.english) searchQueries.push(titles.english);
-      if (titles?.romaji) searchQueries.push(titles.romaji);
-      if (searchQueries.length === 0) searchQueries.push(queryId);
+
+      // Secondary fallback: Jikan API (MAL IDs and AniList IDs often match for popular/older shows)
+      if (searchQueries.length === 0) {
+        const jikanResp = await fetch(`https://api.jikan.moe/v4/anime/${queryId}`);
+        if (jikanResp.ok) {
+          const jikanData = await jikanResp.json() as any;
+          if (jikanData.data) {
+             if (jikanData.data.title_english) searchQueries.push(jikanData.data.title_english);
+             if (jikanData.data.title) searchQueries.push(jikanData.data.title);
+          }
+        }
+      }
+      
     } catch(e: any) {
-      console.error("Anilist lookup failed:", e.message || e);
+      console.error("Anime ID lookup failed:", e.message || e);
     }
+    if (searchQueries.length === 0) searchQueries.push(queryId);
   }
 
   let matchedAnime: any = null;
@@ -186,24 +200,34 @@ async function resolveAnime(queryId: string) {
   for (const sq of searchQueries) {
     const url = new URL("https://anikoto.cz/filter");
     url.searchParams.append("keyword", sq);
-    const resp = await fetch(url.toString(), { headers: HEADERS });
-    const text = await resp.text();
-    const results = extractAnimeList(text);
-    if (results.length > 0) {
-      const lowerSq = sq.toLowerCase();
-      matchedAnime = results.find(r => r.title.toLowerCase() === lowerSq);
-      if (matchedAnime) break;
+    try {
+      const resp = await fetch(url.toString(), { headers: HEADERS });
+      const text = await resp.text();
+      const results = extractAnimeList(text);
+      if (results.length > 0) {
+        const lowerSq = sq.toLowerCase();
+        matchedAnime = results.find(r => r.title.toLowerCase() === lowerSq);
+        if (matchedAnime) {
+          break;
+        }
+      }
+    } catch (e: any) {
+      console.error("Search error:", e.message);
     }
   }
 
   if (!matchedAnime) {
     const url = new URL("https://anikoto.cz/filter");
     url.searchParams.append("keyword", searchQueries[0]);
-    const resp = await fetch(url.toString(), { headers: HEADERS });
-    const text = await resp.text();
-    const results = extractAnimeList(text);
-    if (results.length > 0) {
-      matchedAnime = results[0];
+    try {
+      const resp = await fetch(url.toString(), { headers: HEADERS });
+      const text = await resp.text();
+      const results = extractAnimeList(text);
+      if (results.length > 0) {
+        matchedAnime = results[0];
+      }
+    } catch (e: any) {
+      console.error("Fallback search error:", e.message);
     }
   }
 
@@ -216,7 +240,7 @@ async function resolveAnime(queryId: string) {
     };
   }
 
-  return matchedAnime;
+  return { matchedAnime };
 }
 
 app.get("/api/search", async (c) => {
@@ -243,7 +267,7 @@ app.get("/api/episodes", async (c) => {
   }
 
   try {
-    const matchedAnime = await resolveAnime(queryId);
+    const { matchedAnime } = await resolveAnime(queryId);
 
     if (!matchedAnime) {
       return c.json({ success: false, error: "Anime not found on anikoto.cz" }, 404);
@@ -272,7 +296,7 @@ app.get("/api/servers", async (c) => {
     return c.json({ error: "Missing id or ep parameter" }, 400);
   }
   try {
-    const matchedAnime = await resolveAnime(queryId);
+    const { matchedAnime } = await resolveAnime(queryId);
     if (!matchedAnime) {
       return c.json({ success: false, error: "Anime not found on anikoto.cz" }, 404);
     }
@@ -324,7 +348,7 @@ app.get("/api/stream", async (c) => {
     return c.json({ error: "Missing required query parameters" }, 400);
   }
   try {
-    const matchedAnime = await resolveAnime(queryId);
+    const { matchedAnime } = await resolveAnime(queryId);
     if (!matchedAnime) {
       return c.json({ success: false, error: "Anime not found on anikoto.cz" }, 404);
     }
