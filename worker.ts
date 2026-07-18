@@ -6,6 +6,46 @@ const app = new Hono()
 
 app.use('*', cors())
 
+// Welcome and API usage documentation route
+app.get("/", (c) => {
+  return c.json({
+    success: true,
+    message: "Welcome to the Anikoto x Anilist Scraper API!",
+    endpoints: {
+      search: "/api/search?keyword=One Piece",
+      episodes: "/api/episodes?id=one-piece-odmau (or AniList ID)",
+      servers: "/api/servers?id=one-piece-odmau&ep=ep-1",
+      stream: "/api/stream?id=one-piece-odmau&ep=ep-1&server=hd-1"
+    }
+  });
+});
+
+// Custom 404 Not Found Handler with route guidance
+app.notFound((c) => {
+  return c.json({
+    success: false,
+    error: "Route Not Found",
+    message: `The requested path '${c.req.path}' does not exist on this API.`,
+    endpoints: {
+      search: "/api/search?keyword=One Piece",
+      episodes: "/api/episodes?id=one-piece-odmau (or AniList ID)",
+      servers: "/api/servers?id=one-piece-odmau&ep=ep-1",
+      stream: "/api/stream?id=one-piece-odmau&ep=ep-1&server=hd-1"
+    }
+  }, 404);
+});
+
+// Global Error Handler to expose details for quick debugging
+app.onError((err, c) => {
+  console.error("Global Worker Error:", err);
+  return c.json({
+    success: false,
+    error: "Internal Server Error",
+    message: err.message || String(err),
+    stack: err.stack || null
+  }, 500);
+});
+
 const HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 };
@@ -156,6 +196,15 @@ async function resolveAnime(queryId: string) {
     if (results.length > 0) {
       matchedAnime = results[0];
     }
+  }
+
+  // Fallback: If not found in search results and doesn't look like a plain numeric ID (not AniList),
+  // treat the queryId directly as the anime ID (slug).
+  if (!matchedAnime && queryId && !isAnilistId) {
+    matchedAnime = {
+      id: queryId,
+      title: queryId.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')
+    };
   }
 
   return matchedAnime;
