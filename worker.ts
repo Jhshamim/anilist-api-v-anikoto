@@ -158,17 +158,26 @@ async function resolveAnime(queryId: string) {
       const q = `query($id:Int){Media(id:$id,type:ANIME){title{romaji english}}}`;
       const gqResp = await fetch("https://graphql.anilist.co", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        },
         body: JSON.stringify({ query: q, variables: { id: parseInt(queryId, 10) } })
       });
-      const gqData = await gqResp.json();
+      if (!gqResp.ok) {
+        const errText = await gqResp.text();
+        console.error(`AniList GraphQL HTTP error ${gqResp.status}:`, errText);
+        throw new Error(`HTTP ${gqResp.status}`);
+      }
+      const gqData = await gqResp.json() as any;
       const titles = gqData.data?.Media?.title;
       searchQueries = [];
       if (titles?.english) searchQueries.push(titles.english);
       if (titles?.romaji) searchQueries.push(titles.romaji);
       if (searchQueries.length === 0) searchQueries.push(queryId);
-    } catch(e) {
-      console.error("Anilist lookup failed", e);
+    } catch(e: any) {
+      console.error("Anilist lookup failed:", e.message || e);
     }
   }
 
